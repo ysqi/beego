@@ -20,6 +20,8 @@ import (
 	"strings"
 )
 
+// 虚拟模式的配置操作类，数据直接存储在 Map 中，仅支持 Key-Value 方式。
+// 当然想存储多值，可以将 Value 按“;”分隔进行存储。
 type fakeConfigContainer struct {
 	data map[string]string
 }

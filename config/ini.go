@@ -43,6 +43,7 @@ var (
 )
 
 // IniConfig implements Config to parse ini file.
+// Ini 格式文件解析器
 type IniConfig struct {
 }
 
@@ -52,11 +53,12 @@ func (ini *IniConfig) Parse(name string) (Configer, error) {
 }
 
 func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
+	// 打开文件，因为是直接 os.Open 以只读模式打开相对路径和绝对路径的文件。
 	file, err := os.Open(name)
 	if err != nil {
 		return nil, err
 	}
-
+	// 初始化 ini 文件操作类
 	cfg := &IniConfigContainer{
 		file.Name(),
 		make(map[string]map[string]string),
@@ -64,30 +66,42 @@ func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
 		make(map[string]string),
 		sync.RWMutex{},
 	}
+	//此时的 Lock 是无效的，应该注释掉
 	cfg.Lock()
 	defer cfg.Unlock()
+	// close预订应该填写在成功打开文件之后。
 	defer file.Close()
 
 	var comment bytes.Buffer
 	buf := bufio.NewReader(file)
 	// check the BOM
+	// 解析前需要判断是否含有 BOM-UTF8 格式文件头，如果是则跳过文件头。
+	// BOM-UTF8格式说明：http://en.wikipedia.org/wiki/Byte_order_mark#Representations_of_byte_order_marks_by_encoding
+	// BOM(字节顺序标记)在UTF-8中被表示为序列：EF BB BF
+	// 可改善项，有可能文件内容字节长度小于3时会出现异常，同时也不需要3次循环读取，直接buf.Read(head),可直接填充读取3个长度。
 	head, err := buf.Peek(3)
 	if err == nil && head[0] == 239 && head[1] == 187 && head[2] == 191 {
 		for i := 1; i <= 3; i++ {
 			buf.ReadByte()
 		}
 	}
+	//所有 Key 默认是存储在默认节点下。
 	section := defaultSection
 	for {
+		//解析文件是按行读取
 		line, _, err := buf.ReadLine()
+		//如果已到文件末尾，则退出
 		if err == io.EOF {
 			break
 		}
+		//如果是空行，则继续。
 		if bytes.Equal(line, bEmpty) {
 			continue
 		}
+		//去掉前后空格
 		line = bytes.TrimSpace(line)
 
+		// 判断是否是注释
 		var bComment []byte
 		switch {
 		case bytes.HasPrefix(line, bNumComment):
@@ -95,6 +109,7 @@ func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
 		case bytes.HasPrefix(line, bSemComment):
 			bComment = bSemComment
 		}
+		//如果是注释，则需要提取注释部分，按行存储在comment中
 		if bComment != nil {
 			line = bytes.TrimLeft(line, string(bComment))
 			line = bytes.TrimLeftFunc(line, unicode.IsSpace)
@@ -103,12 +118,18 @@ func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
 			continue
 		}
 
+		//判断是否是一个 [] 包含的节点，如：[DataBase]
+		// 此判断问题在于将无效的 `[err` 作为一个 Key 处理。
 		if bytes.HasPrefix(line, sectionStart) && bytes.HasSuffix(line, sectionEnd) {
+			// 获取节点名，同时转换为小写
 			section = strings.ToLower(string(line[1 : len(line)-1])) // section name case insensitive
+			// 如果前面有注释，则认为注释是针对本节点，将注释全部分配给该节点。
 			if comment.Len() > 0 {
 				cfg.sectionComment[section] = comment.String()
+				//重置
 				comment.Reset()
 			}
+			// 第一次需初始化节点下数据 Map
 			if _, ok := cfg.data[section]; !ok {
 				cfg.data[section] = make(map[string]string)
 			}
@@ -118,16 +139,21 @@ func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
 		if _, ok := cfg.data[section]; !ok {
 			cfg.data[section] = make(map[string]string)
 		}
+		// 使用 '=' 分割成两份。
 		keyValue := bytes.SplitN(line, bEqual, 2)
-
+		// 去掉 key 前面空格
 		key := string(bytes.TrimSpace(keyValue[0])) // key name case insensitive
 		key = strings.ToLower(key)
 
+		// 如果仅仅 是 lien=include "other.conf" 则按照新文件处理
 		// handle include "other.conf"
 		if len(keyValue) == 1 && strings.HasPrefix(key, "include") {
+			//去空格分割
 			includefiles := strings.Fields(key)
 			if includefiles[0] == "include" && len(includefiles) == 2 {
+				// 去掉 ""
 				otherfile := strings.Trim(includefiles[1], "\"")
+				//如果不是绝对路径，则尝试在同目录下获取文件。
 				if !path.IsAbs(otherfile) {
 					otherfile = path.Join(path.Dir(name), otherfile)
 				}
