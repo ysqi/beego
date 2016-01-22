@@ -114,6 +114,7 @@ func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
 			line = bytes.TrimLeft(line, string(bComment))
 			line = bytes.TrimLeftFunc(line, unicode.IsSpace)
 			comment.Write(line)
+			// TODO: 这个换行符对于多行注释换行是有效的，但要在保存配置文件时需要预防末尾的换行符导致隔行
 			comment.WriteByte('\n')
 			continue
 		}
@@ -157,10 +158,12 @@ func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
 				if !path.IsAbs(otherfile) {
 					otherfile = path.Join(path.Dir(name), otherfile)
 				}
+				//解析该文件
 				i, err := ini.parseFile(otherfile)
 				if err != nil {
 					return nil, err
 				}
+				//将数据插入或替换
 				for sec, dt := range i.data {
 					if _, ok := cfg.data[sec]; !ok {
 						cfg.data[sec] = make(map[string]string)
@@ -169,6 +172,8 @@ func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
 						cfg.data[sec][k] = v
 					}
 				}
+				// 更新注释
+				// TODO: 这里会涉及问题，当 Save 配置文件，会导致注释错乱
 				for sec, comm := range i.sectionComment {
 					cfg.sectionComment[sec] = comm
 				}
@@ -179,6 +184,8 @@ func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
 			}
 		}
 
+		// 如果不是键值对则数据格式错误
+		// TODO: 这个 error 写法可以改善下， fmt.Errorf("read the contentd %q error, should like key = value", line)
 		if len(keyValue) != 2 {
 			return nil, errors.New("read the content error: \"" + string(line) + "\", should key = val")
 		}
@@ -198,6 +205,7 @@ func (ini *IniConfig) parseFile(name string) (*IniConfigContainer, error) {
 }
 
 // ParseData parse ini the data
+// 将 []byte 数据存入临时文件中后按文件进行解析
 func (ini *IniConfig) ParseData(data []byte) (Configer, error) {
 	// Save memory data to temporary file
 	tmpName := path.Join(os.TempDir(), "beego", fmt.Sprintf("%d", time.Now().Nanosecond()))
@@ -220,6 +228,16 @@ type IniConfigContainer struct {
 
 // Bool returns the boolean value for a given key.
 func (c *IniConfigContainer) Bool(key string) (bool, error) {
+	// 使用默认方式转换为普通格式，如："1", "t", "T", "true", "TRUE", "True"
+	// TODO: 这个方式可以修改为其他方式
+	// 		switch str {
+	// 		case "1", "t", "T", "true", "TRUE", "True", "YES", "yes", "Yes", "y", "ON", "on", "On":
+	// 			return true, nil
+	// 		case "0", "f", "F", "false", "FALSE", "False", "NO", "no", "No", "n", "OFF", "off", "Off":
+	// 			return false, nil
+	// 		}
+	// 		return false, fmt.Errorf("parsing %q: invalid syntax", str)
+
 	return strconv.ParseBool(c.getdata(key))
 }
 
@@ -294,6 +312,7 @@ func (c *IniConfigContainer) DefaultString(key string, defaultval string) string
 }
 
 // Strings returns the []string value for a given key.
+// 使用";"分割的字符数组
 func (c *IniConfigContainer) Strings(key string) []string {
 	return strings.Split(c.String(key), ";")
 }
@@ -317,8 +336,10 @@ func (c *IniConfigContainer) GetSection(section string) (map[string]string, erro
 }
 
 // SaveConfigFile save the config into file
+// 保存文件到指定文件，如果文件已存在则覆盖。
 func (c *IniConfigContainer) SaveConfigFile(filename string) (err error) {
 	// Write configuration file by filename.
+	// 创建文件
 	f, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -329,6 +350,7 @@ func (c *IniConfigContainer) SaveConfigFile(filename string) (err error) {
 	// Save default section at first place
 	if dt, ok := c.data[defaultSection]; ok {
 		for key, val := range dt {
+			// TODO: 这个判断是否有必要呢？key 不会存在空字符串
 			if key != " " {
 				// Write key comments.
 				if v, ok := c.keyComment[key]; ok {
@@ -432,6 +454,9 @@ func (c *IniConfigContainer) DIY(key string) (v interface{}, err error) {
 }
 
 // section.key or key
+// 获取 Key 的 Value，key 支持 section::key 格式，e.g
+//		v:=c.getdata("database::pwd")
+//		v:=c.getdata("sessionid")
 func (c *IniConfigContainer) getdata(key string) string {
 	if len(key) == 0 {
 		return ""
@@ -443,6 +468,7 @@ func (c *IniConfigContainer) getdata(key string) string {
 		section, k string
 		sectionKey = strings.Split(strings.ToLower(key), "::")
 	)
+	// 确定 key 所在的 section
 	if len(sectionKey) >= 2 {
 		section = sectionKey[0]
 		k = sectionKey[1]
@@ -450,12 +476,16 @@ func (c *IniConfigContainer) getdata(key string) string {
 		section = defaultSection
 		k = sectionKey[0]
 	}
+	//从节点 section 中获取 Value
 	if v, ok := c.data[section]; ok {
 		if vv, ok := v[k]; ok {
 			return vv
 		}
 	}
 	return ""
+
+	// 该方法可以换个写法
+
 }
 
 func init() {
